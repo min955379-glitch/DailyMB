@@ -1,0 +1,42 @@
+name: Build test APK
+# Builds an installable (debug-signed release) APK in the cloud, stores it as
+# a workflow artifact named DailyMB-apk, and attaches it to the "apk-build"
+# GitHub Release so it can be downloaded directly on a phone.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_PUBLIC_SUPABASE_URL: https://ceukjmqshaboodrxbscz.supabase.co
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNldWtqbXFzaGFib29kcnhic2N6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5Mjc1MDYsImV4cCI6MjEwNzUwMzUwNn0.vuwkmyDgg_YkA6ToBVsj6fzBLEgirrsbT4qa-WCmb88
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - uses: android-actions/setup-android@v3
+      - name: Install dependencies
+        run: npm install
+      - name: Generate icons
+        run: npm run icons
+      - name: Prebuild Android project
+        run: npx expo prebuild --platform android --no-install
+      - name: Build release APK (debug signed, for testing)
+        working-directory: android
+        run: ./gradlew assembleRelease --no-daemon -x lint
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DailyMB-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+      - name: Publish APK to the apk-build release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mv android/app/build/outputs/apk/release/app-release.apk DailyMB.apk
+          gh release create apk-build DailyMB.apk --title "DailyMB test APK" --notes "Installable test build (debug-signed). Connected to the live DailyMB backend." || gh release upload apk-build DailyMB.apk --clobber
