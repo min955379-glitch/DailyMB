@@ -1,0 +1,8 @@
+[project]
+ref = "YOUR_PROJECT_REF"
+[functions.fetch-answers]
+verify_jwt = false
+[functions.register-device]
+verify_jwt = false
+[functions.health]
+verify_jwt = false
