@@ -40,43 +40,60 @@ export function letterForOption(options: string[], correctText: string): string 
 }
 
 export function crossVerify(results: SourceResult[]): VerifiedQuestion[] {
-  const byNo = new Map<number, { votes: Map<string, { text: string; sources: string[] }>; base: ParsedQuestion; allSources: string[] }>();
-  for (const result of results) {
-    for (const q of result.questions) {
-      if (q.questionNo < 1 || q.questionNo > 5) continue;
-      const entry = byNo.get(q.questionNo) ?? { votes: new Map<string, { text: string; sources: string[] }>(), base: q, allSources: [] as string[] };
-      // Longest question text / option list wins as the display base (most complete source).
-      if (q.questionText.length > entry.base.questionText.length) entry.base = q;
-      const key = normalizeText(q.correctText);
-      const vote = entry.votes.get(key) ?? { text: q.correctText, sources: [] as string[] };
-      if (!vote.sources.includes(result.sourceName)) vote.sources.push(result.sourceName);
-      entry.votes.set(key, vote);
-      if (!entry.allSources.includes(result.sourceName)) entry.allSources.push(result.sourceName);
-      byNo.set(q.questionNo, entry);
+  // Group by the QUESTION, not the number: sources sometimes publish different
+  // (stale) question sets, and matching by number alone would glue one set's
+  // questions to another set's answers. A question is verified when >=2
+  // independent sources give the same answer to the same question.
+  type Entry = { source: string; q: ParsedQuestion };
+  const groups = new Map<string, Entry[]>();
+  for (const r of results) for (const q of r.questions) {
+    const key = normalizeText(q.questionText);
+    if (!key) continue;
+    const arr = groups.get(key) ?? []; arr.push({ source: r.sourceName, q }); groups.set(key, arr);
+  }
+  type Candidate = { no: number; score: number; order: number; v: VerifiedQuestion };
+  const candidates: Candidate[] = [];
+  let order = 0;
+  for (const entries of groups.values()) {
+    order += 1;
+    const clusters = new Map<string, Entry[]>();
+    for (const e of entries) {
+      const k = normalizeText(e.q.correctText);
+      const arr = clusters.get(k) ?? []; arr.push(e); clusters.set(k, arr);
     }
+    let best: Entry[] = [];
+    for (const arr of clusters.values()) {
+      const distinct = new Set(arr.map((e) => e.source)).size;
+      const bestDistinct = new Set(best.map((e) => e.source)).size;
+      if (distinct > bestDistinct) best = arr;
+    }
+    if (!best.length) continue;
+    const agreeing = new Set(best.map((e) => e.source)).size;
+    const numCount = new Map<number, number>();
+    for (const e of best) numCount.set(e.q.questionNo, (numCount.get(e.q.questionNo) ?? 0) + 1);
+    const no = [...numCount.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0]?.[0] ?? 0;
+    if (no < 1 || no > 5) continue;
+    const rep = best[0] as Entry;
+    const totalSources = new Set(entries.map((e) => e.source)).size;
+    const confidence: Confidence = agreeing >= 2 ? 'verified' : totalSources >= 2 ? 'uncertain' : 'single_source';
+    candidates.push({ no, score: agreeing, order, v: {
+      questionNo: no,
+      questionText: rep.q.questionText,
+      options: rep.q.options,
+      correctText: rep.q.correctText,
+      correctLetter: letterForOption(rep.q.options, rep.q.correctText),
+      confidence,
+      candidates: [...clusters.values()].map((arr) => (arr[0] as Entry).q.correctText),
+      sources: [...new Set(best.map((e) => e.source))],
+      agreeingSources: agreeing,
+    }});
   }
-  const out: VerifiedQuestion[] = [];
-  for (const [questionNo, entry] of [...byNo.entries()].sort((a, b) => a[0] - b[0])) {
-    const ranked = [...entry.votes.values()].sort((a, b) => b.sources.length - a.sources.length);
-    const top = ranked[0]!;
-    const second = ranked[1];
-    const confidence: Confidence =
-      top.sources.length >= 2 ? 'verified' : entry.allSources.length >= 2 && second ? 'uncertain' : 'single_source';
-    // If two+ sources agree on the top answer it is verified even if a third disagrees.
-    const candidates = confidence === 'uncertain' ? ranked.map((r) => r.text) : [];
-    out.push({
-      questionNo,
-      questionText: entry.base.questionText,
-      options: entry.base.options,
-      correctText: top.text,
-      correctLetter: letterForOption(entry.base.options, top.text),
-      confidence: top.sources.length >= 2 ? 'verified' : confidence,
-      candidates,
-      sources: entry.allSources,
-      agreeingSources: top.sources.length,
-    });
+  // One winner per number: the question with the most agreeing sources.
+  const byNo = new Map<number, Candidate>();
+  for (const c of [...candidates].sort((a, b) => b.score - a.score || a.order - b.order)) {
+    if (!byNo.has(c.no)) byNo.set(c.no, c);
   }
-  return out;
+  return [...byNo.values()].map((c) => c.v).sort((a, b) => a.questionNo - b.questionNo);
 }
 
 export function validateParsed(q: ParsedQuestion): boolean {
@@ -110,10 +127,10 @@ function cleanLine(s: string): string { return s.replace(/\*\*/g, '').replace(/\
 export function parseGeneric(html: string): ParsedQuestion[] {
   try {
     const text = stripHtml(html);
-    const blocks = text.split(/(?=(?:Question|Q\.?)\s*(?:No\.?\s*)?[1-5]\b)/i);
+    const blocks = text.split(/(?=(?:Question|Q\.?)\s*(?:No\.?\s*:?\s*)?0?[1-5]\b)/i);
     const found: ParsedQuestion[] = [];
     for (const block of blocks) {
-      const head = block.match(/(?:Question|Q\.?)\s*(?:No\.?\s*)?([1-5])\s*[:.)-]?\s*([^\n]{3,300})/i);
+      const head = block.match(/(?:Question|Q\.?)\s*(?:No\.?\s*:?\s*)?0?([1-5])\s*[:.)-]?\s*([^\n]{3,300})/i);
       if (!head) continue;
       const questionNo = Number(head[1]);
       const questionText = cleanLine(head[2] ?? '');
@@ -137,7 +154,36 @@ export function parseGeneric(html: string): ParsedQuestion[] {
       const candidate = { questionNo, questionText, options: unique, correctText };
       if (validateParsed(candidate) && !found.some((f) => f.questionNo === questionNo)) found.push(candidate);
     }
+    if (found.length < 5) { for (const f of parseAnswerAnchored(html)) if (!found.some((x) => x.questionNo === f.questionNo)) found.push(f); }
     return found.sort((a, b) => a.questionNo - b.questionNo);
+  } catch { return []; }
+}
+
+
+// Fallback: anchor on the answer lines and read the segment before each one.
+// Handles layouts where the question number is a separate badge ("01") and
+// the question/options are plain lines ending with "Correct Answer: X".
+export function parseAnswerAnchored(html: string): ParsedQuestion[] {
+  try {
+    const lines = stripHtml(html).split('\n').map(cleanLine).filter(Boolean);
+    const answerAt: { idx: number; text: string }[] = [];
+    lines.forEach((line, idx) => {
+      const m = line.match(/^(?:Correct\s+Answer|Answer(?:\s+is\s+option)?)\s*[:\-]?\s*(.{1,200})$/i);
+      if (m && !/question/i.test(line)) answerAt.push({ idx, text: cleanLine(m[1] ?? '').replace(/\(Option\s*[A-E]\)/i, '').trim() });
+    });
+    const out: ParsedQuestion[] = [];
+    answerAt.slice(0, 5).forEach((ans, order) => {
+      const start = order === 0 ? 0 : (answerAt[order - 1]?.idx ?? 0) + 1;
+      let segment = lines.slice(Math.max(start, ans.idx - 8), ans.idx);
+      segment = segment.filter((l) => !/^0?[1-5]$/.test(l) && !/answers today|updated:|questions ·|verified from/i.test(l));
+      if (segment.length < 3) return;
+      let questionText = segment[0] ?? '';
+      questionText = questionText.replace(/^(?:Question|Q\.?)\s*(?:No\.?\s*:?\s*)?0?[1-5]\s*[:.)-]?\s*/i, '').trim();
+      const options = [...new Map(segment.slice(1).map((o) => o.replace(/^[-A-E][.)]\s*/, '').trim()).filter(Boolean).map((o) => [normalizeText(o), o] as const)).values()];
+      const candidate = { questionNo: order + 1, questionText, options, correctText: ans.text };
+      if (validateParsed(candidate)) out.push(candidate);
+    });
+    return out;
   } catch { return []; }
 }
 
