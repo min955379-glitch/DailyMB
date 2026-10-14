@@ -12,4 +12,3 @@ export interface DayAnswers {
 }
 export type AnswerMode = 'short' | 'full';
 export type ThemePref = 'system' | 'light' | 'dark';
-export type LanguagePref = 'en' | 'ur';

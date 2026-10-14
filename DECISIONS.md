@@ -64,3 +64,25 @@
   theme/tokens.ts with the exact dark palette specified; no hardcoded hex
   remains in app/ or components/.
 - Contrast QA found and fixed one real failure (light success badge 4.26:1).
+
+## Addendum 2026-10-14 (owner fixes: Check button, custom time, English only)
+- Diagnosis of "no answers in the daytime": the APK the owner installed was
+  built without the backend env (its JS bundle contains no Supabase URL), so
+  the app could never load answers. The backend itself was live (5 answers
+  for 2026-10-14 readable with the public anon key). Fixed by rebuilding
+  from the GitHub Actions workflow, which carries the live env; the new
+  bundle was verified to contain the backend URL before delivery.
+- Home empty-state button renamed Retry -> Check; it re-queries the backend,
+  and Home now also re-checks automatically whenever the app returns to the
+  foreground, so answers appear as soon as they are published.
+- Backend fetch schedule gained a midday run: pg_cron job
+  dailymb-fetch-1205-karachi (12:05 Asia/Karachi) in addition to 00:05 and
+  05:30, so late-published answers are picked up the same day.
+- Settings: notification time keeps the five preset chips and gains a
+  Custom option with a native time picker (@react-native-community/
+  datetimepicker 8.0.1). The chosen custom time is persisted like any
+  preset and flows into device registration + local fallback scheduling
+  through the existing settings effect.
+- Language: Urdu removed completely (settings row, ur.json, i18n resources,
+  RTL switching, language store field and LanguagePref type). English only.
+- Verification: tsc strict clean, ESLint clean, Jest 29/29 pass.
