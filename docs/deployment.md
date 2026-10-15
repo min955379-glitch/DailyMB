@@ -43,7 +43,7 @@ to Pro to run all three.
 ## DailyMB backend specifics
 
 - URL: https://ceukjmqshaboodrxbscz.supabase.co
-- Edge Functions: fetch-answers, register-device, health (all ACTIVE)
+- Edge Functions: fetch-answers (v4 since 2026-10-15), register-device, health (all ACTIVE)
 - pg_cron: dailymb-fetch-0005-karachi (00:05 Asia/Karachi), 
   dailymb-fetch-0530-karachi (05:30 Asia/Karachi), dailymb-purge (30 days)
 - FUNCTION_SECRET is set as an Edge Function secret and in Vault for cron;
@@ -51,3 +51,20 @@ to Pro to run all three.
 - Verification rule (fixed after a live incident on day one): answers are
   matched per QUESTION across sources, never per question number alone,
   because some sources publish stale question sets.
+- Second live incident, fixed 2026-10-15 in fetch-answers v4: the day's set
+  reused the stem "Which sentence is correct?" for Q1/Q4/Q5. crossVerify
+  grouped by question text and kept only the strongest answer cluster per
+  group, so the real Q4/Q5 never became slot candidates and stale
+  single-source questions from lagging sources (theiq, apna4g) filled the
+  slots. Fixes in lib/answer-core.ts (synced to _shared): (a) every answer
+  cluster in a text group is now a slot candidate, claiming its modal
+  question number; (b) writes go through planDailyQuizWrites - never
+  downgrade a stored row, and delete single_source orphans a mostly
+  verified run no longer reports; (c) parser hardening: numeric HTML
+  entities decoded in stripHtml, the earliest answer match in a block wins
+  (a footer "Correct Answers." heading had poisoned Q5), and the
+  answer-anchored parse fills/replaces prose "question texts". Regression
+  tests: __tests__/same-stem.test.ts, __tests__/plan-writes.test.ts,
+  __tests__/parser-2026-10-15.test.ts. After redeploy, a manual refetch
+  (same pg_net + Vault path as cron) repaired 2026-10-15: all five slots
+  verified, matching the web consensus.

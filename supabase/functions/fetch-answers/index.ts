@@ -3,7 +3,7 @@
 // or manually. Fetches every enabled source, cross-verifies, stores, pushes.
 // deno-lint-ignore-file no-explicit-any
 import { createClient } from 'jsr:@supabase/supabase-js@2';
-import { PARSERS, crossVerify, karachiToday } from '../_shared/answer-core.ts';
+import { PARSERS, crossVerify, karachiToday, planDailyQuizWrites } from '../_shared/answer-core.ts';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -67,7 +67,20 @@ Deno.serve(async (req) => {
     }
   }
   const verified = crossVerify(results as any);
-  for (const q of verified) {
+  // Write through the planner (fix for the 2026-10-15 stale-row failure):
+  // never downgrade a stored row, and delete single_source orphans a
+  // mostly-verified run no longer reports, instead of leaving yesterday's
+  // questions in today's set.
+  const { data: existingRows } = await supabase.from('daily_quiz')
+    .select('question_no, question_text, confidence').eq('date', date);
+  const plan = planDailyQuizWrites(
+    (existingRows ?? []).map((r: any) => ({ questionNo: r.question_no, questionText: r.question_text, confidence: r.confidence })),
+    verified as any,
+  );
+  for (const no of plan.toDelete) {
+    await supabase.from('daily_quiz').delete().eq('date', date).eq('question_no', no);
+  }
+  for (const q of plan.toUpsert) {
     await supabase.from('daily_quiz').upsert({
       date, question_no: q.questionNo, question_text: q.questionText, options: q.options,
       correct_text: q.correctText, correct_letter: q.correctLetter, confidence: q.confidence,
